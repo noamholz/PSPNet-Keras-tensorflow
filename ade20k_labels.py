@@ -23,7 +23,7 @@ labels = [Label('wall', 0, (120, 120, 120)),
         Label('road', 6, (140, 140, 140)),
         Label('bed', 7, (204, 5, 255)),
         Label('windowpane', 8, (230, 230, 230)),
-        Label('grass', 9, (4, 250, 7)),
+        Label('grass', 9, (4, 250, 7)),  # (4, 249, 7) ??
         Label('cabinet', 10, (224, 5, 255)),
         Label('sidewalk', 11, (235, 255, 7)),
         Label('person', 12, (150, 5, 61)),
@@ -166,3 +166,4 @@ labels = [Label('wall', 0, (120, 120, 120)),
         Label('flag', 149, (92, 0, 255))]
 
 ade20k_id2label = {label.id: label for label in labels}
+ade20k_label_dict = {label[0]:label[2] for label in labels}

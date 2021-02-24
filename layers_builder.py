@@ -1,18 +1,39 @@
 from __future__ import print_function
 from math import ceil
-from keras import layers
-from keras.layers import Conv2D, MaxPooling2D, AveragePooling2D
-from keras.layers import BatchNormalization, Activation, Input, Dropout, ZeroPadding2D, Lambda
-from keras.layers.merge import Concatenate, Add
-from keras.models import Model
-from keras.optimizers import SGD
-from keras.backend import tf as ktf
+from tensorflow.keras import layers
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, AveragePooling2D
+from tensorflow.keras.layers import BatchNormalization, Activation, Input, Dropout, ZeroPadding2D, Lambda
+from tensorflow.keras.layers import Concatenate, Add
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import SGD
+import tensorflow.keras.backend  as ktf
 
 import tensorflow as tf
 
 learning_rate = 1e-3  # Layer specific learning rate
 # Weight decay not implemented
 
+# class BatchNormalization_custom(tf.keras.layers.BatchNormalization):
+#     """
+#     Replace BatchNormalization layers with this new layer.
+#     This layer has fixed momentum 0.9.
+#     """
+#     def __init__(self, momentum=0.9, name=None, training=False, **kwargs):
+#         super(BatchNormalization, self).__init__(momentum=momentum, name=name, **kwargs)
+#         self.training = training
+#
+#     def call(self, inputs, training=None):
+#         if self.training is not None:
+#             training = self.training
+#         return super().call(inputs=inputs, training=training)
+#
+#     def get_config(self):
+#         config = super(BatchNormalization, self).get_config()
+#         return config
+#
+#
+# def BN(name=""):
+#     return BatchNormalization_custom(momentum=0.95, name=name, epsilon=1e-5, training=False)
 
 def BN(name=""):
     return BatchNormalization(momentum=0.95, name=name, epsilon=1e-5)
@@ -29,8 +50,8 @@ class Interp(layers.Layer):
 
     def call(self, inputs, **kwargs):
         new_height, new_width = self.new_size
-        resized = ktf.image.resize_images(inputs, [new_height, new_width],
-                                          align_corners=True)
+        import tensorflow as tf
+        resized = tf.image.resize_images(inputs, [new_height, new_width], align_corners=True) #NOAM: get back align_corners=True?
         return resized
 
     def compute_output_shape(self, input_shape):
@@ -193,15 +214,20 @@ def ResNet(inp, layers):
 
 def interp_block(prev_layer, level, feature_map_shape, input_shape):
     if input_shape == (473, 473):
-        kernel_strides_map = {1: 60,
-                              2: 30,
-                              3: 20,
-                              6: 10}
+        kernel_strides_map = {1: (60, 60),
+                              2: (30, 30),
+                              3: (20, 20),
+                              6: (10, 10),}
     elif input_shape == (713, 713):
-        kernel_strides_map = {1: 90,
-                              2: 45,
-                              3: 30,
-                              6: 15}
+        kernel_strides_map = {1: (90, 90),
+                              2: (45, 45),
+                              3: (30, 30),
+                              6: (15, 15), }
+    elif input_shape == (473, 713):
+        kernel_strides_map = {1: (60, 90),
+                              2: (30, 45),
+                              3: (20, 30),
+                              6: (10, 15), }
     else:
         print("Pooling parameters for input shape ",
               input_shape, " are not defined.")
@@ -211,8 +237,8 @@ def interp_block(prev_layer, level, feature_map_shape, input_shape):
         "conv5_3_pool" + str(level) + "_conv",
         "conv5_3_pool" + str(level) + "_conv_bn"
     ]
-    kernel = (kernel_strides_map[level], kernel_strides_map[level])
-    strides = (kernel_strides_map[level], kernel_strides_map[level])
+    kernel = kernel_strides_map[level]
+    strides = kernel_strides_map[level]
     prev_layer = AveragePooling2D(kernel, strides=strides)(prev_layer)
     prev_layer = Conv2D(512, (1, 1), strides=(1, 1), name=names[0],
                         use_bias=False)(prev_layer)
@@ -233,6 +259,7 @@ def build_pyramid_pooling_module(res, input_shape):
           (feature_map_size, ))
 
     interp_block1 = interp_block(res, 1, feature_map_size, input_shape)
+
     interp_block2 = interp_block(res, 2, feature_map_size, input_shape)
     interp_block3 = interp_block(res, 3, feature_map_size, input_shape)
     interp_block6 = interp_block(res, 6, feature_map_size, input_shape)
@@ -275,4 +302,38 @@ def build_pspnet(nb_classes, resnet_layers, input_shape, activation='softmax'):
     model.compile(optimizer=sgd,
                   loss='categorical_crossentropy',
                   metrics=['accuracy'])
+    return model
+
+
+def build_pspnet_specClasses(classes_idxs, resnet_layers, input_shape, activation='softmax'):
+    """Build PSPNet."""
+    print("Building a PSPNet based on ResNet %i expecting inputs of shape %s predicting %i classes" % (
+        resnet_layers, input_shape, len(classes_idxs)))
+    # final_activation = 'softmax' if len(classes_idxs) > 1 else
+    # loss_func = 'categorical_crossentropy' if len(classes_idxs) > 1 else 'binary_crossentropy'
+    inp = Input((input_shape[0], input_shape[1], 3))
+    res = ResNet(inp, layers=resnet_layers)
+    psp = build_pyramid_pooling_module(res, input_shape)
+
+    x = Conv2D(512, (3, 3), strides=(1, 1), padding="same", name="conv5_4",
+               use_bias=False)(psp)
+    x = BN(name="conv5_4_bn")(x)
+    x = Activation('relu')(x)
+    x = Dropout(0.1)(x)
+
+    x = Conv2D(150, (1, 1), strides=(1, 1), name="conv6")(x)
+
+    # x = Lambda(Interp, arguments={'shape': (
+    #    input_shape[0], input_shape[1])})(x)
+    x = Interp([input_shape[0], input_shape[1]])(x)
+    x = Lambda(lambda x_: x_[..., 9:10])(x)
+    x = Activation('sigmoid', name='test')(x)
+
+    model = Model(inputs=inp, outputs=x)
+
+    # # Solver
+    # sgd = SGD(lr=learning_rate, momentum=0.9, nesterov=True)
+    # model.compile(optimizer=sgd,
+    #               loss=loss_func,
+    #               metrics=['accuracy'])
     return model

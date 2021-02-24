@@ -1,7 +1,7 @@
 import os
 import time
-import keras.backend as K
-from keras.callbacks import Callback, TensorBoard, ReduceLROnPlateau, ModelCheckpoint
+import tensorflow.keras.backend as K
+from tensorflow.keras.callbacks import Callback, TensorBoard, ReduceLROnPlateau, ModelCheckpoint
 
 class LrReducer(Callback):
   def __init__(self, base_lr = 0.01, max_epoch = 150, power=0.9, verbose=1):
@@ -19,7 +19,7 @@ class LrReducer(Callback):
         print(" - learning rate: %10f" % (new_lr))
 
 def callbacks(logdir):
-  model_checkpoint = ModelCheckpoint("weights_train/weights.{epoch:02d}-{loss:.2f}.h5", monitor='loss', verbose=1, period=10) 
+  model_checkpoint = ModelCheckpoint("weights_train/weights.{epoch:02d}-{loss:.2f}.h5", monitor='loss', verbose=1, period=1)
   tensorboard_callback = TensorBoard(log_dir=logdir, write_graph=True, write_images=True, histogram_freq=1)
   plateau_callback = ReduceLROnPlateau(monitor='loss', factor=0.99, verbose=1, patience=0, min_lr=0.00001) 
   #return [CheckPoints(), tensorboard_callback, LrReducer()]

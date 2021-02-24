@@ -4,22 +4,23 @@ import os
 from os.path import splitext, join, isfile, isdir, basename
 import argparse
 import numpy as np
-from scipy import misc, ndimage
-from keras import backend as K
-from keras.models import model_from_json, load_model
+# from scipy import misc, ndimage
+import tensorflow.keras.backend as K
+from tensorflow.keras.models import model_from_json, load_model
 import tensorflow as tf
 import layers_builder as layers
 from glob import glob
 from utils import utils
-from keras.utils.generic_utils import CustomObjectScope
+from tensorflow.python.keras.utils.generic_utils import CustomObjectScope
 import cv2
 import math
+from PIL import Image
 # -- Fix for macos, uncomment it
 # import matplotlib
 # matplotlib.use('TkAgg')
 # --
 import matplotlib.pyplot as plt
-
+from ade20k_labels import ade20k_label_dict as ade20k_labels
 
 from imageio import imread
 # These are the means for the ImageNet pretrained ResNet
@@ -63,7 +64,8 @@ class PSPNet(object):
             print(
                 "Input %s not fitting for network size %s, resizing. You may want to try sliding prediction for better results." % (
                 img.shape[0:2], self.input_shape))
-            img = misc.imresize(img, self.input_shape)
+            img = np.array(Image.fromarray(img).resize(size=self.input_shape))
+            # img = misc.imresize(img, self.input_shape)
 
         img = img - DATA_MEAN
         img = img[:, :, ::-1]  # RGB => BGR
@@ -133,7 +135,8 @@ class PSPNet(object):
         print("Started prediction...")
         for scale in scales:
             print("Predicting image scaled by %f" % scale)
-            scaled_img = misc.imresize(img, size=scale, interp="bilinear")
+            scaled_img = np.array(Image.fromarray(img).resize(size=(int(scale * img.shape[0]), int(scale * img.shape[1])), resample=Image.BILINEAR))
+            # scaled_img = misc.imresize(img, size=scale, interp="bilinear")
 
             if sliding_evaluation:
                 scaled_probs = self.predict_sliding(scaled_img, flip_evaluation)
@@ -219,9 +222,20 @@ class PSPNet101(PSPNet):
                         input_shape=input_shape, weights=weights)
 
 
+def update_weights_json_to_python36p(dataset):
+    if dataset == 'cityscapes':
+        model = layers.build_pspnet(nb_classes=19, resnet_layers=101, input_shape=(713, 713), activation='softmax')
+        with open('weights/keras/pspnet101_cityscapes.json', 'w') as json_file:
+            json_file.write(model.to_json())
+    elif dataset == 'ade20k':
+        model = layers.build_pspnet(nb_classes=150, resnet_layers=50, input_shape=(473, 473), activation='softmax')
+        with open('weights/keras/pspnet50_ade20k.json', 'w') as json_file:
+            json_file.write(model.to_json())
+
+
 def main(args):
     # Handle input and output args
-    images = glob(args.glob_path) if args.glob_path else [args.input_path, ]
+    images = sorted(glob(args.glob_path))[::args.glob_interval] if args.glob_path else [args.input_path, ]
     if args.glob_path:
         fn, ext = splitext(args.output_path)
         if ext:
@@ -252,23 +266,29 @@ def main(args):
             else:
                 print("Network architecture not implemented.")
         else:
+            # pspnet = PSPNet50(nb_classes=2, input_shape=(
+            #     768, 480), weights=args.weights)
             pspnet = PSPNet50(nb_classes=2, input_shape=(
-                768, 480), weights=args.weights)
+                473, 473), weights=args.weights)
 
         EVALUATION_SCALES = [1.0]
         if args.multi_scale:
             EVALUATION_SCALES = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75]  # must be all floats! Taken from original paper
 
         for i, img_path in enumerate(images):
+            # if '287799' not in img_path: continue
             print("Processing image {} / {}".format(i + 1, len(images)))
             img = imread(img_path, pilmode='RGB')
+            cv2.fillPoly(img, [np.array([[700, 0], [799, 100], [799, 0]])], 0)
+            cv2.fillPoly(img, [np.array([[0, 100], [100, 0], [0, 0]])], 0)
 
             probs = pspnet.predict_multi_scale(img, args.flip, args.sliding, EVALUATION_SCALES)
+            # cm = np.argmax(probs, axis=2)
+            pm = np.sort(probs, axis=2)[..., ::-1]
+            cm = np.argsort(probs, axis=2)[..., ::-1]
 
-            cm = np.argmax(probs, axis=2)
-            pm = np.max(probs, axis=2)
-
-            colored_class_image = utils.color_class_image(cm, args.model)
+            # pm = probs[cm[..., predlayer_i]]
+            colored_class_image = utils.color_class_image(cm[..., 0], args.model)
             alpha_blended = 0.5 * colored_class_image + 0.5 * img
 
             if args.glob_path:
@@ -277,35 +297,69 @@ def main(args):
             else:
                 filename, ext = splitext(args.output_path)
 
-            misc.imsave(filename + "_seg_read" + ext, cm)
-            misc.imsave(filename + "_seg" + ext, colored_class_image)
-            misc.imsave(filename + "_probs" + ext, pm)
-            misc.imsave(filename + "_seg_blended" + ext, alpha_blended)
+            # cv2.imwrite(filename + "_seg_read" + ext, cm)
+            # cv2.imwrite(filename + "_seg" + ext, colored_class_image)
+            # cv2.imwrite(filename + "_probs" + ext, pm)
+            # cv2.imwrite(filename + "_seg_blended" + ext, alpha_blended)
+
+            sky_orig = np.where((colored_class_image != ade20k_labels['sky']).any(axis=-1), 255, 0).astype(np.uint8)
+            mask_building = np.where((colored_class_image == ade20k_labels['building']).any(axis=-1))
+            mask_tree = np.where((colored_class_image == ade20k_labels['tree']).any(axis=-1))
+            sky_orig[mask_building[0], mask_building[1]] = 205
+            sky_orig[mask_tree[0], mask_tree[1]] = 155
+            sky_orig[int(sky_orig.shape[0] * 2 / 3):, ...] = 255
+            fn_split = filename.split('/')
+            cv2.imwrite('/'.join(fn_split[:-1] + ['/superpixels2/'] + fn_split[-1:]) + ext,
+                        sky_orig.astype(np.uint8))
+            # msk_border_np = \
+            #     cv2.dilate(sky_orig.astype('uint8'), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (50, 50)),
+            #                iterations=1) - \
+            #     cv2.erode(sky_orig.astype('uint8'), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (100, 100)),
+            #               iterations=1)
+            # sky = np.where(msk_border_np, 128, sky_orig)
+            # sky = np.where((colored_class_image == [180, 120, 120]).all(axis=-1) * (sky == 128), 255, sky).astype(np.uint8)
+            # sky[int(sky.shape[0] * 2 / 3):, ...] = 255
+            # fn_split = filename.split('/')
+            # cv2.imwrite('/'.join(fn_split[:-1] + ['/trimap/'] + fn_split[-1:]) + ext, sky)
+            # cv2.imwrite('/'.join(fn_split[:-1] + ['/image/'] + fn_split[-1:]) + ext, img[..., ::-1])
+            # cv2.imwrite('/'.join(fn_split[:-1] + ['/seg_orig/'] + fn_split[-1:]) + ext,
+            #             np.where(sky_orig[..., None], img[..., ::-1], img[..., ::-1] // 2))
+
+
+            # cm2 = np.where(pm[..., 1] > pm[..., 0] / 10, cm[..., 1], cm[..., 0])
+            # # colored_class_image2 = utils.color_class_image(cm2, args.model)
+            # colored_class_image2 = utils.color_class_image(cm[...,1], args.model)
+            # sky_orig2 = np.where((colored_class_image2 != [6, 230, 230]).any(axis=-1), 255, 0).astype(np.uint8)
+            # sky_multilayer = np.dstack([sky_orig, sky_orig2, sky_orig2])
+            # cv2.imwrite('/'.join(fn_split[:-1] + ['/superpixels/'] + fn_split[-1:]) + ext, sky_multilayer.astype(np.uint8))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-m', '--model', type=str, default='pspnet101_voc2012',
+    parser.add_argument('-m', '--model', type=str, default='pspnet50_ade20k',
                         help='Model/Weights to use',
                         choices=['pspnet50_ade20k',
                                  'pspnet101_cityscapes',
                                  'pspnet101_voc2012'])
     parser.add_argument('-w', '--weights', type=str, default=None)
-    parser.add_argument('-i', '--input_path', type=str, default='example_images/ade20k.jpg',
-                        help='Path the input image')
-    parser.add_argument('-g', '--glob_path', type=str, default=None,
-                        help='Glob path for multiple images')
-    parser.add_argument('-o', '--output_path', type=str, default='example_results/ade20k.jpg',
-                        help='Path to output')
+    # parser.add_argument('-i', '--input_path', type=str, default='example_images/frame-000000115873.png',                        help='Path the input image')
+    # parser.add_argument('-g', '--glob_path', type=str, default=None,                         help='Glob path for multiple images')
+    # parser.add_argument('-g', '--glob_path', type=str, default='/home/noam/Desktop/gimp_monodepth/img/*.png', help='Glob path for multiple images')
+    parser.add_argument('-g', '--glob_path', type=str, default='/media/noam/Storage/semanticseg/datasets/rgo_videos/ColorCamera/20201029_Ginegar2/Images_col_MLRI_800x800/*.png', help='Glob path for multiple images')
+    parser.add_argument('-gi', '--glob_interval', type=int, default=30, help='skip input files with defined interval')
+    # parser.add_argument('-o', '--output_path', type=str, default='example_results/frame-000000115873.png', help='Path to output')
+    parser.add_argument('-o', '--output_path', type=str, default='/media/noam/Storage/semanticseg/findskies/code/DNN/sky_autolabel/pspnet_FBAmatting/20201029_Ginegar2', help='Path to output')
     parser.add_argument('--id', default="0")
     parser.add_argument('--input_size', type=int, default=500)
     parser.add_argument('-s', '--sliding', action='store_true',
                         help="Whether the network should be slided over the original image for prediction.")
-    parser.add_argument('-f', '--flip', action='store_true', default=True,
+    parser.add_argument('-f', '--flip', action='store_true', default=False,
                         help="Whether the network should predict on both image and flipped image.")
-    parser.add_argument('-ms', '--multi_scale', action='store_true',
+    parser.add_argument('-ms', '--multi_scale', action='store_true', default=False,
                         help="Whether the network should predict on multiple scales.")
 
     args = parser.parse_args()
 
+    # update_weights_json_to_python36p()
+    # args.weights = 'weights/keras/pspnet50_ade20k.h5'
     main(args)
 

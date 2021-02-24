@@ -1,7 +1,9 @@
 import os
 import random
 import numpy as np
-from scipy.misc import imresize, imread
+# from scipy.misc import imread, imresize
+from cv2 import resize as imresize
+from cv2 import imread
 from scipy.ndimage import zoom
 from collections import defaultdict
 
@@ -18,22 +20,42 @@ def update_inputs(batch_size = None, input_size = None, num_classes = None):
   return np.zeros([batch_size, input_size[0], input_size[1], 3]), \
     np.zeros([batch_size, input_size[0], input_size[1], num_classes])
 
-def data_generator_s31(datadir='', nb_classes = None, batch_size = None, input_size=None, separator='_', test_nmb=50):
+def data_generator_rgo(datadir='', nb_classes = None, batch_size = None, input_size=None, separator='_', test_nmb=50):
   if not os.path.exists(datadir):
     print("ERROR!The folder is not exist")
   #listdir = os.listdir(datadir)
   data = defaultdict(dict)
-  image_dir = os.path.join(datadir, "imgs")
+  image_dir = os.path.join(datadir, "img")
   image_paths = os.listdir(image_dir)
   for image_path in image_paths:
     nmb = image_path.split(separator)[0]
     data[nmb]['image'] = image_path
-  anno_dir = os.path.join(datadir, "maps_bordered")
+  anno_dir = os.path.join(datadir, "SegmentationClass_new")
   anno_paths = os.listdir(anno_dir)
   for anno_path in anno_paths:
     nmb = anno_path.split(separator)[0]
     data[nmb]['anno'] = anno_path
   values = data.values()
+  random.shuffle(values)
+  return generate(values[test_nmb:], nb_classes, batch_size, input_size, image_dir, anno_dir), \
+      generate(values[:test_nmb], nb_classes, batch_size, input_size, image_dir, anno_dir)
+
+def data_generator_s31(datadir='', nb_classes = None, batch_size = None, input_size=None, separator='_', test_nmb=50):
+  if not os.path.exists(datadir):
+    print("ERROR!The folder is not exist")
+  #listdir = os.listdir(datadir)
+  data = defaultdict(dict)
+  image_dir = os.path.join(datadir, "img")
+  image_paths = os.listdir(image_dir)
+  for image_path in image_paths:
+    nmb = image_path.split(separator)[0]
+    data[nmb]['image'] = image_path
+  anno_dir = os.path.join(datadir, "SegmentationClass_new")
+  anno_paths = os.listdir(anno_dir)
+  for anno_path in anno_paths:
+    nmb = anno_path.split(separator)[0]
+    data[nmb]['anno'] = anno_path
+  values = list(data.values())
   random.shuffle(values)
   return generate(values[test_nmb:], nb_classes, batch_size, input_size, image_dir, anno_dir), \
       generate(values[:test_nmb], nb_classes, batch_size, input_size, image_dir, anno_dir)
@@ -44,8 +66,9 @@ def generate(values, nb_classes, batch_size, input_size, image_dir, anno_dir):
     images, labels = update_inputs(batch_size=batch_size,
        input_size=input_size, num_classes=nb_classes)
     for i, d in enumerate(values):
-      img = imresize(imread(os.path.join(image_dir, d['image']), mode='RGB'), input_size)
-      y = imread(os.path.join(anno_dir, d['anno']), mode='L')
+      img = imresize(imread(os.path.join(image_dir, d['image']), 1), input_size[::-1])
+      y = imread(os.path.join(anno_dir, d['anno']), 0)
+      y = (y > 0) * 1  # findgrass specific labeling
       h, w = input_size
       y = zoom(y, (1.*h/y.shape[0], 1.*w/y.shape[1]), order=1, prefilter=False)
       y = (np.arange(nb_classes) == y[:,:,None]).astype('float32')

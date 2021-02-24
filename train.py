@@ -1,13 +1,14 @@
 from os import path
 from os.path import join
-from scipy.misc import imresize
-from utils.preprocessing import data_generator_s31
+# from scipy.misc import imresize
+from utils.preprocessing import data_generator_s31, preprocess_img
 from utils.callbacks import callbacks
-from keras.models import load_model
+from tensorflow.keras.models import load_model
 import layers_builder as layers
 import numpy as np
 import argparse
 import os
+import matplotlib.pyplot as plt
 
 
 def set_npy_weights(weights_path, model):
@@ -16,7 +17,7 @@ def set_npy_weights(weights_path, model):
     h5_path = join("weights", "keras", weights_path + ".h5")
 
     print("Importing weights from %s" % npy_weights_path)
-    weights = np.load(npy_weights_path).item()
+    weights = np.load(npy_weights_path, allow_pickle=True, encoding="latin1").item()
 
     for layer in model.layers:
         print(layer.name)
@@ -26,7 +27,7 @@ def set_npy_weights(weights_path, model):
             scale = weights[layer.name]['scale'].reshape(-1)
             offset = weights[layer.name]['offset'].reshape(-1)
 
-            self.model.get_layer(layer.name).set_weights(
+            model.get_layer(layer.name).set_weights(
                 [scale, offset, mean, variance])
 
         elif layer.name[:4] == 'conv' and not layer.name[-4:] == 'relu':
@@ -53,13 +54,43 @@ def train(datadir, logdir, input_size, nb_classes, resnet_layers, batchsize, wei
                                     resnet_layers=resnet_layers,
                                     input_shape=input_size)
         set_npy_weights(pre_trained, model)
-    dataset_len = len(os.listdir(os.path.join(datadir, 'imgs')))
+    dataset_len = len(os.listdir(os.path.join(datadir, 'img')))
     train_generator, val_generator = data_generator_s31(
         datadir=datadir, batch_size=batchsize, input_size=input_size, nb_classes=nb_classes, separator=sep)
+    model.save('weights_train/pretrained_ade20k_473x713.h5')
     model.fit_generator(
         generator=train_generator,
-        epochs=100000, verbose=True, steps_per_epoch=500,
+        validation_data=val_generator,
+        validation_steps=20,
+        epochs=2, verbose=True, steps_per_epoch=1,
         callbacks=callbacks(logdir), initial_epoch=initial_epoch)
+
+
+def predict(datadir, logdir, input_size, nb_classes, resnet_layers, batchsize, weights, initial_epoch, pre_trained, sep):
+    if args.weights:
+        model = load_model(weights)
+    else:
+        model = layers.build_pspnet(nb_classes=nb_classes,
+                                    resnet_layers=resnet_layers,
+                                    input_shape=input_size)
+        if False:
+            model.load_weights('weights_train/weights.01-0.05.h5')
+        else:
+            set_npy_weights(pre_trained, model)
+        # set_npy_weights(pre_trained, model)
+    train_generator, val_generator = data_generator_s31(
+        datadir=datadir, batch_size=batchsize, input_size=input_size, nb_classes=nb_classes, separator=sep)
+    DATA_MEAN = np.array([[[123.68, 116.779, 103.939]]])
+    img = np.array(next(iter(val_generator))[0])[0, ..., ::-1]
+    img = img - DATA_MEAN
+    img = img[:, :, ::-1]
+    img.astype('float32')
+    a = model.predict_on_batch(img[None, ...])
+    plt.imshow(batch[0][0, ...].astype('uint8')[..., ::-1])
+    plt.imshow(a[0, ..., 1]>0.5, alpha=0.4)
+    plt.show()
+    plt.imshow(model.predict_on_batch(batch - DATA_MEAN[None, ..., ::-1]).argmax(axis=-1)[0,...])
+    plt.show()
 
 
 class PSPNet(object):
@@ -71,16 +102,16 @@ class PSPNet(object):
                                          layers=resnet_layers,
                                          input_shape=self.input_shape)
         print("Load pre-trained weights")
-        self.model.load_weights("weights/keras/pspnet101_voc2012.h5")
+        self.model.load_weights("weights/keras/pspnet101_cityscapes.h5")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input_dim', type=int, default=473)
+    parser.add_argument('--input_dim', nargs='+', type=int, default=(473, 713))
     parser.add_argument('--classes', type=int, default=2)
     parser.add_argument('--resnet_layers', type=int, default=50)
-    parser.add_argument('--batch', type=int, default=2)
-    parser.add_argument('--datadir', type=str, required=True)
-    parser.add_argument('--logdir', type=str)
+    parser.add_argument('--batch', type=int, default=1)
+    parser.add_argument('--datadir', type=str, required=False, default='../../../../../datasets/annots_findgrass/rgo_annots_20201023_color/20200820_Ofek10b_color/')
+    parser.add_argument('--logdir', type=str, default='log')
     parser.add_argument('--weights', type=str, default=None)
     parser.add_argument('--initial_epoch', type=int, default=0)
     parser.add_argument('-m', '--model', type=str, default='pspnet50_ade20k',
@@ -93,6 +124,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
-
-    train(args.datadir, args.logdir, (640, 480), args.classes, args.resnet_layers,
+    # predict('../../../../../datasets/annots_findgrass/rgo_annots_20201023_color/20200910_Ofek_ShabtaiArea/', args.logdir, (473, 473), args.classes, args.resnet_layers,
+    #       args.batch, args.weights, args.initial_epoch, args.model, args.sep)
+    train(args.datadir, args.logdir, args.input_dim, args.classes, args.resnet_layers,
           args.batch, args.weights, args.initial_epoch, args.model, args.sep)
